@@ -2,10 +2,17 @@
   import { onMount } from "svelte";
   import { bootstrapGame } from "$lib/game/bootstrap";
   import HUDOverlay from "$lib/ui/HUDOverlay.svelte";
+  import { getRuntimeConfig } from "$lib/runtime";
+  import { game } from "$lib/stores/game.svelte";
 
   let canvas: HTMLCanvasElement;
 
-  onMount(() => bootstrapGame(canvas));
+  onMount(() => {
+    const runtime = getRuntimeConfig();
+    game.lang = runtime.lang;
+    game.demoMode = runtime.demo;
+    return bootstrapGame(canvas);
+  });
 </script>
 
 <div class="stage">

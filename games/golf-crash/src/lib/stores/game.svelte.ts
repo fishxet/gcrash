@@ -4,6 +4,7 @@ import {
   STEP_BET_MICRO,
 } from "@golf-crash/utils-shared";
 import type { CrashCause, PreShotFail } from "../game/math.js";
+import type { AppLang } from "../i18n.js";
 
 export type RoundOutcome = "fairway" | "sand" | "water" | "cashout" | "jackpot";
 
@@ -11,6 +12,7 @@ export type GamePhase =
   | "idle"
   | "preShot"
   | "flight"
+  | "runToBall"
   | "landed"
   | "cashOut"
   | "crashed"
@@ -19,6 +21,7 @@ export type GamePhase =
 export type GameState = {
   balanceMicro: number;
   betMicro: number;
+  currency: string;
   multiplier: number;
   winningsMicro: number;
   characterId: string;
@@ -29,11 +32,15 @@ export type GameState = {
   crashCause: CrashCause | null;
   preShotFail: PreShotFail | null;
   isJackpot: boolean;
+  lang: AppLang;
+  demoMode: boolean;
+  lastError: string | null;
 };
 
 export const game: GameState = $state({
   balanceMicro: 300_000,
   betMicro: 100_000,
+  currency: "USD",
   multiplier: 1,
   winningsMicro: 0,
   characterId: "sheikh",
@@ -44,6 +51,9 @@ export const game: GameState = $state({
   crashCause: null,
   preShotFail: null,
   isJackpot: false,
+  lang: "en",
+  demoMode: true,
+  lastError: null,
 });
 
 export const adjustBet = (delta: number): void => {

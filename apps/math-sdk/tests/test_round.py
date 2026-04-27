@@ -7,6 +7,7 @@ from golf_crash_math.round import (
     JACKPOT_MULT,
     crash_from_uniform,
     generate_round,
+    generate_stake_engine_state,
 )
 from golf_crash_math.rtp import simulate
 
@@ -68,6 +69,20 @@ def test_decorative_events_within_flight_window() -> None:
         for ev in r.decorative_events:
             assert 0 <= ev.at_sec
             assert ev.kind in {"bird", "wind", "helicopter", "plane", "cart"}
+
+
+def test_stake_engine_state_matches_frontend_contract() -> None:
+    state = generate_stake_engine_state(Seed("dev", "dev", 3))
+
+    assert state["roundId"].startswith("round-")
+    assert state["serverSeedHash"]
+    assert state["seed"] == {"serverSeed": "dev", "clientSeed": "dev", "nonce": 3}
+    assert state["outcome"] in {"preShotFail", "holeInOne", "crash"}
+    assert state["landingZone"] in {"fairway", "sand", "water", "cart", "hole"}
+    assert isinstance(state["finalMultiplier"], float | int)
+    assert isinstance(state["crashMultiplier"], float | int)
+    assert isinstance(state["crashAtSec"], float | int)
+    assert isinstance(state["decorativeEvents"], list)
 
 
 def test_simulate_rtp_in_reasonable_range() -> None:

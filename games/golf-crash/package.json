@@ -1,11 +1,13 @@
 {
   "name": "golf-crash-game",
   "version": "0.0.1",
+  "gameID": "golf-crash-game",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
+    "postbuild": "node scripts/prepare-stake-release.js",
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "lint": "eslint ."

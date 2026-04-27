@@ -2,24 +2,31 @@
   import { microToCurrencyString } from "@golf-crash/utils-shared";
   import { game } from "$lib/stores/game.svelte";
   import { startRound, cashOut } from "$lib/game/round";
+  import { t } from "$lib/i18n";
 
   const handleClick = () => {
-    if (game.phase === "flight") cashOut();
+    if (isCashOut) cashOut();
     else void startRound();
   };
 
   const insufficient = $derived(game.balanceMicro < game.betMicro);
-  const isCashOut = $derived(game.phase === "flight");
+  const sandLocked = $derived(game.phase === "landed" && game.history.at(-1) === "sand");
+  const isCashOut = $derived(game.phase === "flight" || sandLocked);
   const disabled = $derived(
-    !isCashOut && (insufficient || game.phase === "cashOut" || game.phase === "crashed"),
+    !isCashOut &&
+      (insufficient ||
+        game.phase === "cashOut" ||
+        game.phase === "crashed" ||
+        game.phase === "runToBall"),
   );
 
   const label = $derived.by(() => {
-    if (isCashOut) return "CASH OUT";
-    if (game.phase === "crashed") return "CRASHED";
-    if (game.phase === "cashOut") return "CASHED OUT";
-    if (insufficient) return "LOW BALANCE";
-    return "SHOOT";
+    if (isCashOut) return t(game.lang, "cashOut");
+    if (game.phase === "crashed") return t(game.lang, "crashed");
+    if (game.phase === "cashOut") return t(game.lang, "cashedOut");
+    if (game.phase === "runToBall") return "RUNNING";
+    if (insufficient) return t(game.lang, "lowBalance");
+    return t(game.lang, "shoot");
   });
 
   const sub = $derived.by(() => {
@@ -27,6 +34,7 @@
       return microToCurrencyString(Math.round(game.betMicro * game.multiplier));
     if (game.phase === "crashed") return `x${game.crashAt.toFixed(2)}`;
     if (game.phase === "cashOut") return microToCurrencyString(game.winningsMicro);
+    if (game.phase === "landed") return `x${game.multiplier.toFixed(2)}`;
     return microToCurrencyString(game.betMicro);
   });
 </script>

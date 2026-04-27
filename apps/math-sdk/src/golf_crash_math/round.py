@@ -12,12 +12,13 @@ crash distribution.
 
 from __future__ import annotations
 
+import hashlib
 import math
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 from .events import DEFAULT_EVENTS, EventTable
-from .rng import Seed, floats
+from .rng import Seed, floats, server_seed_hash
 
 HOUSE_EDGE = 0.06
 MAX_CRASH = 1_000_000.0
@@ -27,9 +28,10 @@ GROWTH_C = 0.08
 GROWTH_K = 1.6
 
 PreShotFail = Literal["mole", "club_break", "self_hit"]
-CrashCause = Literal["bird", "wind", "helicopter", "plane", "cart", "timeout"]
+CrashCause = Literal["bird", "wind", "helicopter", "plane", "cart", "timeout", "fakeBoost"]
 DecorativeKind = Literal["bird", "wind", "helicopter", "plane", "cart"]
 Outcome = Literal["pre_shot_fail", "hole_in_one", "crash"]
+LandingZone = Literal["fairway", "sand", "water", "cart", "hole"]
 
 
 @dataclass(frozen=True)
@@ -43,9 +45,51 @@ class RoundResult:
     seed: Seed
     outcome: Outcome
     crash_multiplier: float  # the multiplier at which flight ends (1.0 for pre_shot_fail)
+    final_multiplier: float
+    landing_zone: LandingZone
+    crash_at_sec: float
     pre_shot_fail: PreShotFail | None = None
     crash_cause: CrashCause | None = None
     decorative_events: list[DecorativeEvent] = field(default_factory=list)
+
+    @property
+    def round_id(self) -> str:
+        digest = hashlib.sha256(
+            f"{self.seed.server_seed}:{self.seed.client_seed}:{self.seed.nonce}".encode()
+        ).hexdigest()
+        return f"round-{digest[:16]}"
+
+    def to_stake_engine_state(self) -> dict[str, Any]:
+        """Return the camelCase round.state contract consumed by the web client."""
+
+        pre_shot_fail = {
+            "club_break": "clubBreak",
+            "self_hit": "selfHit",
+        }.get(self.pre_shot_fail or "", self.pre_shot_fail)
+        outcome = {
+            "pre_shot_fail": "preShotFail",
+            "hole_in_one": "holeInOne",
+        }.get(self.outcome, self.outcome)
+        return {
+            "roundId": self.round_id,
+            "seed": {
+                "serverSeed": self.seed.server_seed,
+                "clientSeed": self.seed.client_seed,
+                "nonce": self.seed.nonce,
+            },
+            "serverSeedHash": server_seed_hash(self.seed.server_seed),
+            "finalMultiplier": self.final_multiplier,
+            "outcome": outcome,
+            "landingZone": self.landing_zone,
+            "crashMultiplier": self.crash_multiplier,
+            "crashAtSec": self.crash_at_sec,
+            "preShotFail": pre_shot_fail,
+            "crashCause": self.crash_cause,
+            "decorativeEvents": [
+                {"kind": event.kind, "atSec": event.at_sec}
+                for event in self.decorative_events
+            ],
+        }
 
 
 def crash_from_uniform(u: float, house_edge: float = HOUSE_EDGE) -> float:
@@ -81,21 +125,25 @@ def _pick_pre_shot_fail(u: float, table: EventTable) -> PreShotFail | None:
     return None
 
 
-def _pick_crash_cause(u: float) -> CrashCause:
-    weights: list[tuple[CrashCause, float]] = [
-        ("bird", 0.30),
-        ("wind", 0.25),
-        ("helicopter", 0.15),
-        ("plane", 0.10),
-        ("cart", 0.10),
-        ("timeout", 0.10),
-    ]
-    cum = 0.0
-    for kind, p in weights:
-        cum += p
-        if u < cum:
-            return kind
-    return "timeout"
+def _pick_crash_cause(u: float, crash_at_sec: float) -> CrashCause:
+    options: list[CrashCause] = ["cart", "wind", "bird", "helicopter", "plane", "timeout", "fakeBoost"]
+    return options[min(len(options) - 1, math.floor(u * len(options)))]
+
+
+def _flight_duration(u: float) -> float:
+    return 5.0 + u * 3.0
+
+
+def _pick_landing_zone(u: float, cause: CrashCause) -> LandingZone:
+    if cause == "cart":
+        return "cart"
+    if cause == "timeout" or cause == "fakeBoost":
+        return "water"
+    if u < 0.55:
+        return "fairway"
+    if u < 0.78:
+        return "sand"
+    return "water"
 
 
 def _schedule_decorative(rolls: list[float], crash_t: float) -> list[DecorativeEvent]:
@@ -103,17 +151,20 @@ def _schedule_decorative(rolls: list[float], crash_t: float) -> list[DecorativeE
     out: list[DecorativeEvent] = []
     if crash_t <= 0.4:
         return out
-    slot_spacing = 0.7
-    weights: list[tuple[DecorativeKind, float]] = [
-        ("bird", 0.4),
-        ("wind", 0.3),
-        ("helicopter", 0.2),
-        ("plane", 0.15),
-        ("cart", 0.1),
-    ]
+    def pick_for_progress(u: float, progress: float) -> DecorativeKind:
+        if progress < 0.25:
+            options: list[DecorativeKind] = ["cart", "wind", "bird"]
+        elif progress < 0.65:
+            options = ["wind", "bird", "helicopter"]
+        else:
+            options = ["bird", "helicopter", "plane"]
+        return options[min(len(options) - 1, math.floor(u * len(options)))]
+
     cursor = 0
-    for slot in range(6):
-        base_t = 0.4 + slot * slot_spacing
+    max_events = min(6, max(1, math.floor(crash_t / 0.75)))
+    for slot in range(max_events):
+        progress = (slot + 1) / (max_events + 1)
+        base_t = crash_t * progress
         if base_t >= crash_t - 0.2:
             break
         if cursor + 1 >= len(rolls):
@@ -121,13 +172,8 @@ def _schedule_decorative(rolls: list[float], crash_t: float) -> list[DecorativeE
         jitter = rolls[cursor]
         pick = rolls[cursor + 1]
         cursor += 2
-        t = min(crash_t - 0.2, base_t + jitter * 0.5)
-        cum = 0.0
-        for kind, p in weights:
-            cum += p
-            if pick < cum:
-                out.append(DecorativeEvent(kind=kind, at_sec=t))
-                break
+        t = min(crash_t - 0.2, base_t + (jitter - 0.5) * 0.35)
+        out.append(DecorativeEvent(kind=pick_for_progress(pick, progress), at_sec=t))
     return out
 
 
@@ -140,27 +186,41 @@ def generate_round(seed: Seed, table: EventTable = DEFAULT_EVENTS) -> RoundResul
             seed=seed,
             outcome="pre_shot_fail",
             crash_multiplier=1.0,
+            final_multiplier=0.0,
+            landing_zone="water",
+            crash_at_sec=0.0,
             pre_shot_fail=pre_shot,
         )
 
     if rolls[1] < JACKPOT_PROB:
-        crash_t = time_for_multiplier(JACKPOT_MULT)
-        decorative = _schedule_decorative(rolls[2:], crash_t)
+        crash_t = _flight_duration(rolls[2])
+        decorative = _schedule_decorative(rolls[3:], crash_t)
         return RoundResult(
             seed=seed,
             outcome="hole_in_one",
             crash_multiplier=JACKPOT_MULT,
+            final_multiplier=JACKPOT_MULT,
+            landing_zone="hole",
+            crash_at_sec=crash_t,
             decorative_events=decorative,
         )
 
     crash_mult = crash_from_uniform(rolls[2])
-    cause = _pick_crash_cause(rolls[3])
-    crash_t = time_for_multiplier(crash_mult)
-    decorative = _schedule_decorative(rolls[4:], crash_t)
+    crash_t = _flight_duration(rolls[5])
+    cause = _pick_crash_cause(rolls[3], crash_t)
+    landing_zone = _pick_landing_zone(rolls[4], cause)
+    decorative = _schedule_decorative(rolls[6:], crash_t)
     return RoundResult(
         seed=seed,
         outcome="crash",
         crash_multiplier=crash_mult,
+        final_multiplier=crash_mult,
+        landing_zone=landing_zone,
+        crash_at_sec=crash_t,
         crash_cause=cause,
         decorative_events=decorative,
     )
+
+
+def generate_stake_engine_state(seed: Seed, table: EventTable = DEFAULT_EVENTS) -> dict[str, Any]:
+    return generate_round(seed, table).to_stake_engine_state()

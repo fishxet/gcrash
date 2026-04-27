@@ -1,15 +1,20 @@
 <script lang="ts">
   import { microToUnit, MICRO } from "@golf-crash/utils-shared";
   import { game, adjustBet, setBet } from "$lib/stores/game.svelte";
+  import { t } from "$lib/i18n";
 
   const PRESETS = [0.1, 0.2, 0.4, 0.8];
 </script>
 
 <div class="bet">
   <div class="row">
-    <button class="step" onclick={() => adjustBet(-10)} aria-label="decrease bet">−</button>
+    <button class="step" onclick={() => adjustBet(-10)} aria-label={t(game.lang, "decreaseBet")}
+      >−</button
+    >
     <div class="amount">{microToUnit(game.betMicro).toFixed(2)}</div>
-    <button class="step" onclick={() => adjustBet(10)} aria-label="increase bet">+</button>
+    <button class="step" onclick={() => adjustBet(10)} aria-label={t(game.lang, "increaseBet")}
+      >+</button
+    >
   </div>
 
   <div class="presets">

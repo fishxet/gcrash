@@ -1,8 +1,10 @@
 <script lang="ts">
   import { microToCurrencyString } from "@golf-crash/utils-shared";
   import { game } from "$lib/stores/game.svelte";
+  import { cashOut } from "$lib/game/round";
   import BetPanel from "./BetPanel.svelte";
   import PrimaryActionButton from "./PrimaryActionButton.svelte";
+  import { t } from "$lib/i18n";
 
   const flagColor = (o: typeof game.history[number]): string => {
     switch (o) {
@@ -28,7 +30,7 @@
       </div>
       <div class="avatarMeta">
         <div class="charName">{game.characterDisplayName.toUpperCase()}</div>
-        <div class="balance">{microToCurrencyString(game.balanceMicro)}</div>
+        <div class="balance">{microToCurrencyString(game.balanceMicro)} {game.currency}</div>
       </div>
     </div>
 
@@ -38,9 +40,9 @@
     </div>
 
     <div class="winnings">
-      <div class="winLabel">CURRENT WINNINGS</div>
+      <div class="winLabel">{t(game.lang, "currentWinnings")}</div>
       <div class="winValue">{microToCurrencyString(game.winningsMicro)}</div>
-      <div class="historyLabel">HISTORY</div>
+      <div class="historyLabel">{t(game.lang, "history")}</div>
       <div class="historyRow">
         {#each game.history as outcome, i (i)}
           <span class="flag" style="--c:{flagColor(outcome)}"></span>
@@ -50,7 +52,16 @@
   </div>
 
   <BetPanel />
+  {#if game.phase === "landed"}
+    <button class="secondaryCashOut" onclick={() => void cashOut()}>
+      <span>{t(game.lang, "cashOut")}</span>
+      <strong>{microToCurrencyString(game.winningsMicro)}</strong>
+    </button>
+  {/if}
   <PrimaryActionButton />
+  {#if game.lastError}
+    <div class="error">{game.lastError}</div>
+  {/if}
 </div>
 
 <style>
@@ -169,6 +180,29 @@
     background: var(--c);
     clip-path: polygon(0 0, 100% 0, 100% 60%, 50% 60%, 50% 100%, 0 100%);
     display: inline-block;
+  }
+
+  .error {
+    font-size: 11px;
+    color: #ff7070;
+    text-align: center;
+  }
+
+  .secondaryCashOut {
+    width: 100%;
+    min-height: 42px;
+    border: none;
+    border-radius: 8px;
+    background: linear-gradient(180deg, #ffb627 0%, #d68a0a 100%);
+    color: #2c2f33;
+    font-weight: 800;
+    cursor: pointer;
+    box-shadow: 0 3px 0 #8a5a00;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    text-transform: uppercase;
   }
 
   /* Desktop / landscape side rail */

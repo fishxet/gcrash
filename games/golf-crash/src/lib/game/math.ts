@@ -25,14 +25,19 @@ export type Seed = {
 
 export type PreShotFail = "mole" | "clubBreak" | "selfHit";
 export type DecorativeKind = "bird" | "wind" | "helicopter" | "plane" | "cart";
-export type CrashCause = DecorativeKind | "timeout";
+export type CrashCause = DecorativeKind | "timeout" | "fakeBoost";
 export type RoundOutcomeKind = "preShotFail" | "holeInOne" | "crash";
+export type LandingZone = "fairway" | "sand" | "water" | "cart" | "hole";
 
 export type DecorativeEvent = { kind: DecorativeKind; atSec: number };
 
 export type RoundPlan = {
+  roundId: string;
   seed: Seed;
+  serverSeedHash: string;
+  finalMultiplier: number;
   outcome: RoundOutcomeKind;
+  landingZone: LandingZone;
   crashMultiplier: number;
   crashAtSec: number;
   preShotFail: PreShotFail | null;
@@ -65,6 +70,17 @@ const hmacStream = (seed: Seed, cursor: number): Promise<Uint8Array> => {
   const key = enc.encode(seed.serverSeed);
   return hmacSha256(key, message);
 };
+
+const toHex = (bytes: Uint8Array): string =>
+  Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+
+const sha256Hex = async (value: string): Promise<string> => {
+  const hash = await crypto.subtle.digest("SHA-256", enc.encode(value));
+  return toHex(new Uint8Array(hash));
+};
+
+const roundIdFromSeed = async (seed: Seed): Promise<string> =>
+  `round-${(await sha256Hex(`${seed.serverSeed}:${seed.clientSeed}:${seed.nonce}`)).slice(0, 16)}`;
 
 export const floats = async (seed: Seed, count: number): Promise<number[]> => {
   const out: number[] = [];
@@ -119,61 +135,64 @@ const pickPreShotFail = (u: number): PreShotFail | null => {
 };
 
 const pickCrashCause = (u: number): CrashCause => {
-  let cum = 0;
-  for (const [kind, p] of [
-    ["bird", 0.3],
-    ["wind", 0.25],
-    ["helicopter", 0.15],
-    ["plane", 0.1],
-    ["cart", 0.1],
-    ["timeout", 0.1],
-  ] as const) {
-    cum += p;
-    if (u < cum) return kind;
-  }
-  return "timeout";
+  const options: CrashCause[] = ["cart", "wind", "bird", "helicopter", "plane", "timeout", "fakeBoost"];
+  return options[Math.min(options.length - 1, Math.floor(u * options.length))]!;
+};
+
+const flightDuration = (u: number): number => 5 + u * 3;
+
+const pickLandingZone = (u: number, cause: CrashCause): LandingZone => {
+  if (cause === "cart") return "cart";
+  if (cause === "timeout" || cause === "fakeBoost") return "water";
+  if (u < 0.55) return "fairway";
+  if (u < 0.78) return "sand";
+  return "water";
 };
 
 const scheduleDecorative = (rolls: number[], crashT: number): DecorativeEvent[] => {
   const out: DecorativeEvent[] = [];
   if (crashT <= 0.4) return out;
-  const slotSpacing = 0.7;
-  const weights: Array<[DecorativeKind, number]> = [
-    ["bird", 0.4],
-    ["wind", 0.3],
-    ["helicopter", 0.2],
-    ["plane", 0.15],
-    ["cart", 0.1],
-  ];
+
+  const pickForProgress = (u: number, progress: number): DecorativeKind => {
+    const chain: DecorativeKind[] =
+      progress < 0.25
+        ? ["cart", "wind", "bird"]
+        : progress < 0.65
+          ? ["wind", "bird", "helicopter"]
+          : ["bird", "helicopter", "plane"];
+    return chain[Math.min(chain.length - 1, Math.floor(u * chain.length))]!;
+  };
+
   let cursor = 0;
-  for (let slot = 0; slot < 6; slot++) {
-    const baseT = 0.4 + slot * slotSpacing;
+  const maxEvents = Math.min(6, Math.max(1, Math.floor(crashT / 0.75)));
+  for (let slot = 0; slot < maxEvents; slot++) {
+    const progress = (slot + 1) / (maxEvents + 1);
+    const baseT = crashT * progress;
     if (baseT >= crashT - 0.2) break;
     if (cursor + 1 >= rolls.length) break;
     const jitter = rolls[cursor]!;
     const pick = rolls[cursor + 1]!;
     cursor += 2;
-    const t = Math.min(crashT - 0.2, baseT + jitter * 0.5);
-    let cum = 0;
-    for (const [kind, p] of weights) {
-      cum += p;
-      if (pick < cum) {
-        out.push({ kind, atSec: t });
-        break;
-      }
-    }
+    const t = Math.min(crashT - 0.2, baseT + (jitter - 0.5) * 0.35);
+    out.push({ kind: pickForProgress(pick, progress), atSec: t });
   }
   return out;
 };
 
 export const generatePlan = async (seed: Seed): Promise<RoundPlan> => {
   const rolls = await floats(seed, 32);
+  const roundId = await roundIdFromSeed(seed);
+  const serverSeedHash = await sha256Hex(seed.serverSeed);
 
   const preShotFail = pickPreShotFail(rolls[0]!);
   if (preShotFail !== null) {
     return {
+      roundId,
       seed,
+      serverSeedHash,
+      finalMultiplier: 0,
       outcome: "preShotFail",
+      landingZone: "water",
       crashMultiplier: 1,
       crashAtSec: 0,
       preShotFail,
@@ -183,29 +202,38 @@ export const generatePlan = async (seed: Seed): Promise<RoundPlan> => {
   }
 
   if (rolls[1]! < JACKPOT_PROB) {
-    const crashT = timeForMultiplier(JACKPOT_MULT);
+    const crashT = flightDuration(rolls[2]!);
     return {
+      roundId,
       seed,
+      serverSeedHash,
+      finalMultiplier: JACKPOT_MULT,
       outcome: "holeInOne",
+      landingZone: "hole",
       crashMultiplier: JACKPOT_MULT,
       crashAtSec: crashT,
       preShotFail: null,
       crashCause: null,
-      decorativeEvents: scheduleDecorative(rolls.slice(2), crashT),
+      decorativeEvents: scheduleDecorative(rolls.slice(3), crashT),
     };
   }
 
   const crashMultiplier = crashFromUniform(rolls[2]!);
+  const crashAtSec = flightDuration(rolls[5]!);
   const crashCause = pickCrashCause(rolls[3]!);
-  const crashAtSec = timeForMultiplier(crashMultiplier);
+  const landingZone = pickLandingZone(rolls[4]!, crashCause);
   return {
+    roundId,
     seed,
+    serverSeedHash,
+    finalMultiplier: crashMultiplier,
     outcome: "crash",
+    landingZone,
     crashMultiplier,
     crashAtSec,
     preShotFail: null,
     crashCause,
-    decorativeEvents: scheduleDecorative(rolls.slice(4), crashAtSec),
+    decorativeEvents: scheduleDecorative(rolls.slice(6), crashAtSec),
   };
 };
 
