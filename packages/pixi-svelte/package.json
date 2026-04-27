@@ -1,0 +1,19 @@
+{
+  "name": "@golf-crash/pixi-svelte",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Stub for Stake Engine internal pixi-svelte bridge. Replace with the official package once registry access is granted, or wrap a public alternative (e.g. svelte-pixi) here.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "check": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "pixi.js": "^8.0.0",
+    "svelte": "^5.0.0"
+  }
+}
